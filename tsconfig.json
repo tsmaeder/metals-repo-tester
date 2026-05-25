@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "es5",
+    "module": "commonjs",
+    "rootDir": "app/src",
+    "outDir": "app/build",
+    "strict": false,
+    "noEmitOnError": false
+  },
+  "include": ["app/src/**/*.ts"]
+}
