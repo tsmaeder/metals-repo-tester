@@ -113,6 +113,34 @@ function appendLog(outPath: string, message: string): void {
   fs.appendFileSync(outPath, message + "\n", "utf8");
 }
 
+function timestampNow(): string {
+  return new Date().toISOString();
+}
+
+function logProgress(message: string): void {
+  process.stdout.write("[progress " + timestampNow() + "] " + message + "\n");
+}
+
+function logRepoProgress(repoName: string, message: string): void {
+  logProgress("[" + repoName + "] " + message);
+}
+
+function getLogMessageTypeLabel(type: number | undefined): string {
+  if (type === 1) {
+    return "error";
+  }
+  if (type === 2) {
+    return "warning";
+  }
+  if (type === 3) {
+    return "info";
+  }
+  if (type === 4) {
+    return "log";
+  }
+  return "unknown";
+}
+
 function loadRepos(reposPath: string): RepoEntry[] {
   const raw = fs.readFileSync(reposPath, "utf8");
   const parsed = JSON.parse(raw);
@@ -187,6 +215,7 @@ function runCommandAndCaptureStdout(command: string, args: string[], cwd?: strin
 
 async function resolveMetalsClasspath(serverVersion: string): Promise<string> {
   const artifact = "org.scalameta:metals_2.13:" + serverVersion;
+  logProgress("Resolving Metals classpath for " + artifact);
   const classpath =
     process.platform === "win32"
       ? await runCommandAndCaptureStdout("cmd.exe", ["/d", "/s", "/c", "cs fetch -p " + artifact])
@@ -194,6 +223,7 @@ async function resolveMetalsClasspath(serverVersion: string): Promise<string> {
   if (!classpath) {
     throw new Error("cs fetch returned an empty classpath for " + artifact);
   }
+  logProgress("Resolved Metals classpath for " + artifact);
   return classpath;
 }
 
@@ -331,20 +361,41 @@ function waitForIndexLoadedMessage(client: MetalsLspClient, timeoutMs: number): 
 
 async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: string): Promise<void> {
   appendLog(outPath, "starting " + repo.name);
+  logRepoProgress(repo.name, "Starting repository run");
 
   let tempRootDir = "";
   let repoDir = "";
   let client: MetalsLspClient | null = null;
+  let mirroredLogSubscription: Disposable | null = null;
 
   try {
+    logRepoProgress(repo.name, "Cloning repository from " + repo.uri);
     const cloned = await cloneRepoToTemp(repo);
     tempRootDir = cloned.rootTempDir;
     repoDir = cloned.repoDir;
+    logRepoProgress(repo.name, "Clone completed at " + repoDir);
 
+    logRepoProgress(repo.name, "Starting Metals language server");
     client = await startMetalsClient(metalsClasspath, repoDir, repo.name);
+    logRepoProgress(repo.name, "Metals initialized");
+
+    mirroredLogSubscription = client.onNotification<LogMessageParams>(
+      lspNode.LogMessageNotification.type,
+      (params: LogMessageParams) => {
+        const level = getLogMessageTypeLabel(params && params.type);
+        const message = params && typeof params.message === "string" ? params.message : "";
+        if (message.length > 0) {
+          logProgress("[lsp][" + repo.name + "][" + level + "] " + message);
+        }
+      },
+    );
+
+    logRepoProgress(repo.name, "Waiting for Metals index to load");
     await waitForIndexLoadedMessage(client, 10 * 60 * 1000);
+    logRepoProgress(repo.name, "Metals index loaded");
 
     const javaFiles = collectJavaFiles(repoDir);
+    logRepoProgress(repo.name, "Collected " + javaFiles.length + " Java files");
 
     const diagnosticsWaiters: {
       [uri: string]: Array<(diagnostics: Diagnostic[]) => void>;
@@ -384,6 +435,7 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
       const filePath = javaFiles[i];
       const uri = toFileUri(filePath);
       const text = fs.readFileSync(filePath, "utf8");
+      logRepoProgress(repo.name, "Processing file " + (i + 1) + "/" + javaFiles.length + ": " + filePath);
 
       const didOpenParams: DidOpenTextDocumentParams = {
         textDocument: {
@@ -398,6 +450,7 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
       const diagnostics = await waitForDiagnostics(uri, 10000);
       if (diagnostics === null) {
         appendLog(outPath, "Timeout: " + filePath);
+        logRepoProgress(repo.name, "Timed out waiting for diagnostics: " + filePath);
       } else {
         let hasError = false;
         for (let j = 0; j < diagnostics.length; j += 1) {
@@ -408,6 +461,7 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
         }
         if (hasError) {
           appendLog(outPath, "Error: " + filePath);
+          logRepoProgress(repo.name, "Error diagnostics reported: " + filePath);
         }
       }
 
@@ -418,36 +472,54 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
       };
       client.sendNotification<DidCloseTextDocumentParams>(lspNode.DidCloseTextDocumentNotification.type, didCloseParams);
     }
+    logRepoProgress(repo.name, "Finished processing Java files");
   } catch (error: any) {
-    appendLog(outPath, "Failure: " + repo.name + " - " + String(error && error.message ? error.message : error));
+    const failureMessage = String(error && error.message ? error.message : error);
+    appendLog(outPath, "Failure: " + repo.name + " - " + failureMessage);
+    logRepoProgress(repo.name, "Failure: " + failureMessage);
   } finally {
+    if (mirroredLogSubscription) {
+      mirroredLogSubscription.dispose();
+      mirroredLogSubscription = null;
+    }
     if (client) {
       try {
+        logRepoProgress(repo.name, "Shutting down Metals");
         await withTimeout(client.shutdownAndExit(), 15000, "Shutdown timeout");
+        logRepoProgress(repo.name, "Metals shutdown complete");
       } catch (_error) {
+        logRepoProgress(repo.name, "Metals shutdown timed out; killing process");
         client.kill();
       }
     }
     if (tempRootDir) {
       try {
+        logRepoProgress(repo.name, "Cleaning temporary workspace");
         fs.rmSync(tempRootDir, { recursive: true, force: true });
+        logRepoProgress(repo.name, "Temporary workspace removed");
       } catch (_error) {
         // Best effort cleanup.
       }
     }
     appendLog(outPath, "done " + repo.name);
+    logRepoProgress(repo.name, "Repository run complete");
   }
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
+  logProgress("Loading repositories from " + args.reposPath);
   const repos = loadRepos(args.reposPath);
+  logProgress("Loaded " + repos.length + " repositories");
   const metalsClasspath = await resolveMetalsClasspath(args.serverVersion);
   fs.writeFileSync(args.outPath, "", "utf8");
+  logProgress("Output file initialized at " + args.outPath);
 
   for (let i = 0; i < repos.length; i += 1) {
+    logProgress("Running repository " + (i + 1) + "/" + repos.length + ": " + repos[i].name);
     await processRepo(repos[i], metalsClasspath, args.outPath);
   }
+  logProgress("All repositories processed");
 }
 
 main().catch((error: any) => {
