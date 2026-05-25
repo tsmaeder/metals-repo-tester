@@ -1,5 +1,17 @@
 /// <reference lib="es2015" />
 
+import type {
+  Diagnostic,
+  DidCloseTextDocumentParams,
+  DidOpenTextDocumentParams,
+  InitializeResult,
+  InitializeParams,
+  InitializedParams,
+  LogMessageParams,
+  PublishDiagnosticsParams,
+} from "vscode-languageserver-protocol";
+import type { Disposable, ProtocolConnection } from "vscode-languageserver-protocol/node";
+
 declare function require(name: string): any;
 declare const process: any;
 
@@ -7,45 +19,28 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const cp = require("child_process");
-const BufferCtor = require("buffer").Buffer;
 const pathToFileURL = require("url").pathToFileURL;
+const lspNode = require("vscode-languageserver-protocol/node");
 
 interface RepoEntry {
   name: string;
   uri: string;
 }
 
-interface Diagnostic {
-  severity?: number;
-}
-
-interface PublishDiagnosticsParams {
-  uri: string;
-  diagnostics: Diagnostic[];
-}
-
-interface PendingRequest {
-  resolve: (value: any) => void;
-  reject: (reason?: any) => void;
-}
-
-type NotificationHandler = (params: any) => void;
-
-class JsonRpcLspClient {
+class MetalsLspClient {
   private readonly child: any;
-  private nextId: number = 1;
-  private readonly pending: { [id: number]: PendingRequest } = {};
-  private readonly handlers: { [method: string]: NotificationHandler[] } = {};
-  private readBuffer: any = BufferCtor.alloc(0);
+  private readonly connection: ProtocolConnection;
   private readonly stderrPrefix: string;
 
   public constructor(child: any, stderrPrefix: string) {
     this.child = child;
     this.stderrPrefix = stderrPrefix;
+    this.connection = lspNode.createProtocolConnection(
+      new lspNode.StreamMessageReader(this.child.stdout),
+      new lspNode.StreamMessageWriter(this.child.stdin),
+    );
+    this.connection.listen();
 
-    this.child.stdout.on("data", (chunk: any) => {
-      this.onStdoutChunk(chunk);
-    });
     this.child.stderr.on("data", (chunk: any) => {
       const text = String(chunk);
       if (text.trim().length > 0) {
@@ -53,55 +48,27 @@ class JsonRpcLspClient {
       }
     });
     this.child.on("exit", () => {
-      const ids = Object.keys(this.pending);
-      for (let i = 0; i < ids.length; i += 1) {
-        const idNum = Number(ids[i]);
-        const pendingRequest = this.pending[idNum];
-        if (pendingRequest) {
-          pendingRequest.reject(new Error("Language server process exited"));
-          delete this.pending[idNum];
-        }
-      }
+      this.connection.end();
     });
   }
 
-  public onNotification(method: string, handler: NotificationHandler): void {
-    if (!this.handlers[method]) {
-      this.handlers[method] = [];
-    }
-    this.handlers[method].push(handler);
+  public onNotification<P>(type: any, handler: (params: P) => void): Disposable {
+    return this.connection.onNotification(type, handler);
   }
 
-  public sendRequest(method: string, params: any): Promise<any> {
-    const id = this.nextId;
-    this.nextId += 1;
-    const payload = {
-      jsonrpc: "2.0",
-      id,
-      method,
-      params,
-    };
-
-    return new Promise((resolve, reject) => {
-      this.pending[id] = { resolve, reject };
-      this.writePayload(payload);
-    });
+  public sendRequest<P, R>(type: any, params: P): Promise<R> {
+    return this.connection.sendRequest(type, params);
   }
 
-  public sendNotification(method: string, params: any): void {
-    const payload = {
-      jsonrpc: "2.0",
-      method,
-      params,
-    };
-    this.writePayload(payload);
+  public sendNotification<P>(type: any, params?: P): void {
+    void this.connection.sendNotification(type, params);
   }
 
   public async shutdownAndExit(): Promise<void> {
     try {
-      await this.sendRequest("shutdown", null);
+      await this.sendRequest<void, void>(lspNode.ShutdownRequest.type, undefined);
     } finally {
-      this.sendNotification("exit", null);
+      this.sendNotification(lspNode.ExitNotification.type);
     }
   }
 
@@ -112,76 +79,11 @@ class JsonRpcLspClient {
       // Best effort kill.
     }
   }
-
-  private writePayload(payload: any): void {
-    const body = JSON.stringify(payload);
-    const header = "Content-Length: " + BufferCtor.byteLength(body, "utf8") + "\r\n\r\n";
-    this.child.stdin.write(header + body, "utf8");
-  }
-
-  private onStdoutChunk(chunk: any): void {
-    this.readBuffer = BufferCtor.concat([this.readBuffer, chunk]);
-
-    while (true) {
-      const headerEnd = this.readBuffer.indexOf("\r\n\r\n");
-      if (headerEnd < 0) {
-        return;
-      }
-
-      const headerText = this.readBuffer.slice(0, headerEnd).toString("utf8");
-      const contentLengthMatch = /Content-Length:\s*(\d+)/i.exec(headerText);
-      if (!contentLengthMatch) {
-        this.readBuffer = this.readBuffer.slice(headerEnd + 4);
-        continue;
-      }
-
-      const contentLength = Number(contentLengthMatch[1]);
-      const bodyStart = headerEnd + 4;
-      const bodyEnd = bodyStart + contentLength;
-      if (this.readBuffer.length < bodyEnd) {
-        return;
-      }
-
-      const bodyText = this.readBuffer.slice(bodyStart, bodyEnd).toString("utf8");
-      this.readBuffer = this.readBuffer.slice(bodyEnd);
-
-      let message: any;
-      try {
-        message = JSON.parse(bodyText);
-      } catch (_error) {
-        continue;
-      }
-      this.handleMessage(message);
-    }
-  }
-
-  private handleMessage(message: any): void {
-    if (typeof message.id !== "undefined") {
-      const pendingRequest = this.pending[message.id];
-      if (!pendingRequest) {
-        return;
-      }
-      delete this.pending[message.id];
-      if (message.error) {
-        pendingRequest.reject(new Error(String(message.error.message || "LSP request failed")));
-      } else {
-        pendingRequest.resolve(message.result);
-      }
-      return;
-    }
-
-    if (message.method) {
-      const listeners = this.handlers[message.method] || [];
-      for (let i = 0; i < listeners.length; i += 1) {
-        listeners[i](message.params);
-      }
-    }
-  }
 }
 
-function parseArgs(argv: string[]): { reposPath: string; metalsJarPath: string; outPath: string } {
+function parseArgs(argv: string[]): { reposPath: string; serverVersion: string; outPath: string } {
   let reposPath = "";
-  let metalsJarPath = "";
+  let serverVersion = "";
   let outPath = path.resolve(process.cwd(), "out.txt");
 
   for (let i = 2; i < argv.length; i += 1) {
@@ -189,8 +91,8 @@ function parseArgs(argv: string[]): { reposPath: string; metalsJarPath: string; 
     if (arg === "--repos" && i + 1 < argv.length) {
       reposPath = path.resolve(argv[i + 1]);
       i += 1;
-    } else if (arg === "--metals-jar" && i + 1 < argv.length) {
-      metalsJarPath = path.resolve(argv[i + 1]);
+    } else if (arg === "--server-version" && i + 1 < argv.length) {
+      serverVersion = String(argv[i + 1]).trim();
       i += 1;
     } else if (arg === "--out" && i + 1 < argv.length) {
       outPath = path.resolve(argv[i + 1]);
@@ -198,13 +100,13 @@ function parseArgs(argv: string[]): { reposPath: string; metalsJarPath: string; 
     }
   }
 
-  if (!reposPath || !metalsJarPath) {
+  if (!reposPath || !serverVersion) {
     throw new Error(
-      "Usage: node app/build/index.js --repos <repos.json> --metals-jar <metals.jar> [--out <out.txt>]",
+      "Usage: node app/build/index.js --repos <repos.json> --server-version <metals-version> [--out <out.txt>]",
     );
   }
 
-  return { reposPath, metalsJarPath, outPath };
+  return { reposPath, serverVersion, outPath };
 }
 
 function appendLog(outPath: string, message: string): void {
@@ -251,6 +153,48 @@ function runCommand(command: string, args: string[], cwd?: string): Promise<void
       }
     });
   });
+}
+
+function runCommandAndCaptureStdout(command: string, args: string[], cwd?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = cp.spawn(command, args, {
+      cwd: cwd || process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+    });
+    let stdoutText = "";
+    let stderrText = "";
+    child.stdout.on("data", (chunk: any) => {
+      stdoutText += String(chunk);
+    });
+    child.stderr.on("data", (chunk: any) => {
+      stderrText += String(chunk);
+    });
+    child.on("error", (error: any) => {
+      reject(
+        new Error("Failed to run " + command + " " + args.join(" ") + ": " + String(error && error.message ? error.message : error)),
+      );
+    });
+    child.on("close", (code: number) => {
+      if (code === 0) {
+        resolve(stdoutText.trim());
+      } else {
+        reject(new Error(command + " " + args.join(" ") + " exited with code " + code + (stderrText ? ": " + stderrText : "")));
+      }
+    });
+  });
+}
+
+async function resolveMetalsClasspath(serverVersion: string): Promise<string> {
+  const artifact = "org.scalameta:metals_2.13:" + serverVersion;
+  const classpath =
+    process.platform === "win32"
+      ? await runCommandAndCaptureStdout("cmd.exe", ["/d", "/s", "/c", "cs fetch -p " + artifact])
+      : await runCommandAndCaptureStdout("cs", ["fetch", "-p", artifact]);
+  if (!classpath) {
+    throw new Error("cs fetch returned an empty classpath for " + artifact);
+  }
+  return classpath;
 }
 
 async function cloneRepoToTemp(repo: RepoEntry): Promise<{ rootTempDir: string; repoDir: string }> {
@@ -323,74 +267,81 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: 
   });
 }
 
-async function startMetalsClient(metalsJarPath: string, workspaceDir: string, repoName: string): Promise<JsonRpcLspClient> {
-  const args = ["-Xss4m", "-Xms100m", "-Dmetals.client=repo-tester", "-classpath", metalsJarPath, "scala.meta.metals.Main"];
+async function startMetalsClient(metalsClasspath: string, workspaceDir: string, repoName: string): Promise<MetalsLspClient> {
+  const args = ["-Xss4m", "-Xms100m", "-Dmetals.client=repo-tester", "-classpath", metalsClasspath, "scala.meta.metals.Main"];
   const child = cp.spawn("java", args, {
     cwd: workspaceDir,
     stdio: ["pipe", "pipe", "pipe"],
     shell: false,
   });
-  const client = new JsonRpcLspClient(child, "[" + repoName + "] ");
+  const client = new MetalsLspClient(child, "[" + repoName + "] ");
 
   const rootUri = toFileUri(workspaceDir);
-  await withTimeout(
-    client.sendRequest("initialize", {
-      processId: process.pid,
-      clientInfo: {
-        name: "metals-repo-tester",
-        version: "0.0.0",
+  const initializeParams: InitializeParams = {
+    processId: process.pid,
+    clientInfo: {
+      name: "metals-repo-tester",
+      version: "0.0.0",
+    },
+    locale: "en",
+    rootPath: workspaceDir,
+    rootUri,
+    initializationOptions: {},
+    capabilities: {},
+    trace: "off",
+    workspaceFolders: [
+      {
+        uri: rootUri,
+        name: path.basename(workspaceDir),
       },
-      locale: "en",
-      rootPath: workspaceDir,
-      rootUri,
-      initializationOptions: {},
-      capabilities: {},
-      trace: "off",
-      workspaceFolders: [
-        {
-          uri: rootUri,
-          name: path.basename(workspaceDir),
-        },
-      ],
-    }),
+    ],
+  };
+  await withTimeout(
+    client.sendRequest<InitializeParams, InitializeResult<any>>(lspNode.InitializeRequest.type, initializeParams),
     60000,
     "Timed out waiting for Metals initialize response",
   );
-  client.sendNotification("initialized", {});
+  const initializedParams: InitializedParams = {};
+  client.sendNotification(lspNode.InitializedNotification.type, initializedParams);
   return client;
 }
 
-function waitForIndexLoadedMessage(client: JsonRpcLspClient, timeoutMs: number): Promise<void> {
+function waitForIndexLoadedMessage(client: MetalsLspClient, timeoutMs: number): Promise<void> {
   const indexRegex = /mbt-v2 loaded index for \d+ files in/;
 
   return new Promise((resolve, reject) => {
+    let subscription: Disposable;
     const timer = setTimeout(() => {
+      if (subscription) {
+        subscription.dispose();
+      }
       reject(new Error("Timed out waiting for Metals index log"));
     }, timeoutMs);
 
-    client.onNotification("window/logMessage", (params: any) => {
+    subscription = client.onNotification<LogMessageParams>(lspNode.LogMessageNotification.type, (params: LogMessageParams) => {
       const message = params && typeof params.message === "string" ? params.message : "";
       if (indexRegex.test(message)) {
         clearTimeout(timer);
+        subscription.dispose();
         resolve();
       }
     });
   });
 }
 
-async function processRepo(repo: RepoEntry, metalsJarPath: string, outPath: string): Promise<void> {
+async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: string): Promise<void> {
   appendLog(outPath, "starting " + repo.name);
 
   let tempRootDir = "";
   let repoDir = "";
-  let client: JsonRpcLspClient | null = null;
+  let client: MetalsLspClient | null = null;
 
   try {
     const cloned = await cloneRepoToTemp(repo);
     tempRootDir = cloned.rootTempDir;
     repoDir = cloned.repoDir;
 
-    client = await startMetalsClient(metalsJarPath, repoDir, repo.name);
+    client = await startMetalsClient(metalsClasspath, repoDir, repo.name);
     await waitForIndexLoadedMessage(client, 10 * 60 * 1000);
 
     const javaFiles = collectJavaFiles(repoDir);
@@ -399,7 +350,7 @@ async function processRepo(repo: RepoEntry, metalsJarPath: string, outPath: stri
       [uri: string]: Array<(diagnostics: Diagnostic[]) => void>;
     } = {};
 
-    client.onNotification("textDocument/publishDiagnostics", (params: PublishDiagnosticsParams) => {
+    client.onNotification<PublishDiagnosticsParams>(lspNode.PublishDiagnosticsNotification.type, (params: PublishDiagnosticsParams) => {
       const waiters = diagnosticsWaiters[params.uri];
       if (waiters && waiters.length > 0) {
         const copy = waiters.slice(0);
@@ -434,14 +385,15 @@ async function processRepo(repo: RepoEntry, metalsJarPath: string, outPath: stri
       const uri = toFileUri(filePath);
       const text = fs.readFileSync(filePath, "utf8");
 
-      client.sendNotification("textDocument/didOpen", {
+      const didOpenParams: DidOpenTextDocumentParams = {
         textDocument: {
           uri,
           languageId: "java",
           version: 1,
           text,
         },
-      });
+      };
+      client.sendNotification<DidOpenTextDocumentParams>(lspNode.DidOpenTextDocumentNotification.type, didOpenParams);
 
       const diagnostics = await waitForDiagnostics(uri, 10000);
       if (diagnostics === null) {
@@ -459,11 +411,12 @@ async function processRepo(repo: RepoEntry, metalsJarPath: string, outPath: stri
         }
       }
 
-      client.sendNotification("textDocument/didClose", {
+      const didCloseParams: DidCloseTextDocumentParams = {
         textDocument: {
           uri,
         },
-      });
+      };
+      client.sendNotification<DidCloseTextDocumentParams>(lspNode.DidCloseTextDocumentNotification.type, didCloseParams);
     }
   } catch (error: any) {
     appendLog(outPath, "Failure: " + repo.name + " - " + String(error && error.message ? error.message : error));
@@ -489,14 +442,11 @@ async function processRepo(repo: RepoEntry, metalsJarPath: string, outPath: stri
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
   const repos = loadRepos(args.reposPath);
+  const metalsClasspath = await resolveMetalsClasspath(args.serverVersion);
   fs.writeFileSync(args.outPath, "", "utf8");
 
-  if (!fs.existsSync(args.metalsJarPath)) {
-    throw new Error("Metals jar path does not exist: " + args.metalsJarPath);
-  }
-
   for (let i = 0; i < repos.length; i += 1) {
-    await processRepo(repos[i], args.metalsJarPath, args.outPath);
+    await processRepo(repos[i], metalsClasspath, args.outPath);
   }
 }
 

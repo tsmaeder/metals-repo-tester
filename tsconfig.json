@@ -5,7 +5,8 @@
     "rootDir": "app/src",
     "outDir": "app/build",
     "strict": false,
-    "noEmitOnError": false
+    "noEmitOnError": false,
+    "skipLibCheck": true
   },
   "include": ["app/src/**/*.ts"]
 }

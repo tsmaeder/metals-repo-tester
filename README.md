@@ -20,7 +20,7 @@ A ready-to-edit sample file is included as `repos.json`.
 - Node.js + npm
 - `git` available on PATH
 - `java` available on PATH
-- Metals server jar path (passed via `--metals-jar`)
+- Coursier `cs` available on PATH
 
 ## Build
 
@@ -32,13 +32,13 @@ npm run build
 ## Run
 
 ```bash
-node app/build/index.js --repos repos.json --metals-jar /path/to/metals.jar --out out.txt
+node app/build/index.js --repos repos.json --server-version 2.0.0-SNAPSHOT --out out.txt
 ```
 
 ### Flags
 
 - `--repos <path>`: required JSON file with repository entries
-- `--metals-jar <path>`: required Metals jar/classpath
+- `--server-version <version>`: required Metals server version (resolved via `cs fetch -p`)
 - `--out <path>`: optional output log path (default: `out.txt` in current working directory)
 
 ## Output
