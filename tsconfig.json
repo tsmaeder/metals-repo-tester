@@ -6,7 +6,9 @@
     "outDir": "app/build",
     "strict": false,
     "noEmitOnError": false,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "inlineSources": true
   },
   "include": ["app/src/**/*.ts"]
 }

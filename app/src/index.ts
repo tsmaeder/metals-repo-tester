@@ -8,7 +8,9 @@ import type {
   InitializeParams,
   InitializedParams,
   LogMessageParams,
+  MessageActionItem,
   PublishDiagnosticsParams,
+  ShowMessageRequestParams,
 } from "vscode-languageserver-protocol";
 import type { Disposable, ProtocolConnection } from "vscode-languageserver-protocol/node";
 
@@ -54,6 +56,10 @@ class MetalsLspClient {
 
   public onNotification<P>(type: any, handler: (params: P) => void): Disposable {
     return this.connection.onNotification(type, handler);
+  }
+
+  public onRequest<P, R>(type: any, handler: (params: P) => R | Promise<R>): Disposable {
+    return this.connection.onRequest(type, handler);
   }
 
   public sendRequest<P, R>(type: any, params: P): Promise<R> {
@@ -305,6 +311,24 @@ async function startMetalsClient(metalsClasspath: string, workspaceDir: string, 
     shell: false,
   });
   const client = new MetalsLspClient(child, "[" + repoName + "] ");
+  client.onRequest<ShowMessageRequestParams, MessageActionItem | null>(
+    lspNode.ShowMessageRequest.type,
+    (params: ShowMessageRequestParams) => {
+      const message = params && typeof params.message === "string" ? params.message : "";
+      const actions = params && Array.isArray(params.actions) ? params.actions : [];
+      for (let i = 0; i < actions.length; i += 1) {
+        const action = actions[i];
+        const title = action && typeof action.title === "string" ? action.title : "";
+        if (/MBT/i.test(title)) {
+          logRepoProgress(repoName, "Auto-selected MBT for Metals prompt: " + message);
+          return action;
+        }
+      }
+
+      logRepoProgress(repoName, "Metals prompt had no MBT action: " + message);
+      return null;
+    },
+  );
 
   const rootUri = toFileUri(workspaceDir);
   const initializeParams: InitializeParams = {
@@ -316,7 +340,10 @@ async function startMetalsClient(metalsClasspath: string, workspaceDir: string, 
     locale: "en",
     rootPath: workspaceDir,
     rootUri,
-    initializationOptions: {},
+    initializationOptions: {
+      "metals.preferredBuildServer": "MBT",
+      "isHttpEnabled": true
+    },
     capabilities: {},
     trace: "off",
     workspaceFolders: [

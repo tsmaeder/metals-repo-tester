@@ -1,0 +1,31 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "runWithBuilt",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/app/build/index.js",
+      "args": [
+        "--repos",
+        "repos.json",
+        "--out",
+        "out.txt",
+        "--server-version",
+        "2.0.0-SNAPSHOT"
+      ],
+      "env": {
+        "PATH": "${env:PATH};C:\\Program Files\\Eclipse Adoptium\\jdk-25.0.2.10-hotspot\\bin"
+      },
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceFolder}/app/build/**/*.js"
+      ]
+    }
+  ]
+}
