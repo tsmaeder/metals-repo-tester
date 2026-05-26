@@ -17,7 +17,8 @@ language server finds errors in workspace from a list of github repos.
 
 ## Coding Notes
 
-- Do not guess, ask back 
+- Do not guess, ask back
+- use "undefined", not "null"
 - Use TypeScript for source files.
 - Add or update tests when behavior changes.
 - Avoid breaking existing CLI flags or output without a clear reason.

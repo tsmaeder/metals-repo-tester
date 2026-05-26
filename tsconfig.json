@@ -2,6 +2,7 @@
   "compilerOptions": {
     "target": "es5",
     "module": "commonjs",
+    "types": ["node"],
     "rootDir": "app/src",
     "outDir": "app/build",
     "strict": false,

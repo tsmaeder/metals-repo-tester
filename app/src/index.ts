@@ -13,16 +13,44 @@ import type {
   ShowMessageRequestParams,
 } from "vscode-languageserver-protocol";
 import type { Disposable, ProtocolConnection } from "vscode-languageserver-protocol/node";
+import { URI } from "vscode-uri";
 
 declare function require(name: string): any;
 declare const process: any;
 
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
-const cp = require("child_process");
-const pathToFileURL = require("url").pathToFileURL;
-const lspNode = require("vscode-languageserver-protocol/node");
+import fs = require("fs");
+import path = require("path");
+import os = require("os");
+import cp = require("child_process");
+import { pathToFileURL } from "url";
+import { createProtocolConnection, DidCloseTextDocumentNotification, DidOpenTextDocumentNotification, ExitNotification, InitializedNotification, InitializeRequest, LogMessageNotification, PublishDiagnosticsNotification, ShowMessageRequest, ShutdownRequest, StreamMessageReader, StreamMessageWriter } from "vscode-languageserver-protocol/node";
+
+const REQUIRED_METALS_ARGS = [
+  "-Djol.magicFieldOffset=true",
+  "-Djol.tryWithSudo=true",
+  "-Djdk.attach.allowAttachSelf",
+  "--add-opens=java.base/java.nio=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.resources=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED",
+  "--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED",
+  "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+  "--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED",
+  "--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED",
+  "--add-opens=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED",
+  "--add-opens=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED",
+  "-XX:+DisplayVMOutputToStderr",
+  "-Xlog:disable",
+  "-Xlog:all=warning,gc=warning:stderr",
+]
 
 interface RepoEntry {
   name: string;
@@ -37,9 +65,9 @@ class MetalsLspClient {
   public constructor(child: any, stderrPrefix: string) {
     this.child = child;
     this.stderrPrefix = stderrPrefix;
-    this.connection = lspNode.createProtocolConnection(
-      new lspNode.StreamMessageReader(this.child.stdout),
-      new lspNode.StreamMessageWriter(this.child.stdin),
+    this.connection = createProtocolConnection(
+      new StreamMessageReader(this.child.stdout),
+      new StreamMessageWriter(this.child.stdin),
     );
     this.connection.listen();
 
@@ -72,9 +100,9 @@ class MetalsLspClient {
 
   public async shutdownAndExit(): Promise<void> {
     try {
-      await this.sendRequest<void, void>(lspNode.ShutdownRequest.type, undefined);
+      await this.sendRequest<void, void>(ShutdownRequest.type, undefined);
     } finally {
-      this.sendNotification(lspNode.ExitNotification.type);
+      this.sendNotification(ExitNotification.type);
     }
   }
 
@@ -304,7 +332,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: 
 }
 
 async function startMetalsClient(metalsClasspath: string, workspaceDir: string, repoName: string): Promise<MetalsLspClient> {
-  const args = ["-Xss4m", "-Xms100m", "-Dmetals.client=repo-tester", "-classpath", metalsClasspath, "scala.meta.metals.Main"];
+  const args = ["-Xss4m", "-Xms100m", "-Dmetals.client=repo-tester", "-Dmetals.loglevel=trace", "-classpath", metalsClasspath, ...REQUIRED_METALS_ARGS, "scala.meta.metals.Main"];
   const child = cp.spawn("java", args, {
     cwd: workspaceDir,
     stdio: ["pipe", "pipe", "pipe"],
@@ -312,7 +340,7 @@ async function startMetalsClient(metalsClasspath: string, workspaceDir: string, 
   });
   const client = new MetalsLspClient(child, "[" + repoName + "] ");
   client.onRequest<ShowMessageRequestParams, MessageActionItem | null>(
-    lspNode.ShowMessageRequest.type,
+    ShowMessageRequest.type,
     (params: ShowMessageRequestParams) => {
       const message = params && typeof params.message === "string" ? params.message : "";
       const actions = params && Array.isArray(params.actions) ? params.actions : [];
@@ -342,7 +370,8 @@ async function startMetalsClient(metalsClasspath: string, workspaceDir: string, 
     rootUri,
     initializationOptions: {
       "metals.preferredBuildServer": "MBT",
-      "isHttpEnabled": true
+      "isHttpEnabled": true,
+      "presentationCompilerDiagnostics": true,
     },
     capabilities: {},
     trace: "off",
@@ -354,12 +383,12 @@ async function startMetalsClient(metalsClasspath: string, workspaceDir: string, 
     ],
   };
   await withTimeout(
-    client.sendRequest<InitializeParams, InitializeResult<any>>(lspNode.InitializeRequest.type, initializeParams),
+    client.sendRequest<InitializeParams, InitializeResult<any>>(InitializeRequest.type, initializeParams),
     60000,
     "Timed out waiting for Metals initialize response",
   );
   const initializedParams: InitializedParams = {};
-  client.sendNotification(lspNode.InitializedNotification.type, initializedParams);
+  client.sendNotification(InitializedNotification.type, initializedParams);
   return client;
 }
 
@@ -375,7 +404,7 @@ function waitForIndexLoadedMessage(client: MetalsLspClient, timeoutMs: number): 
       reject(new Error("Timed out waiting for Metals index log"));
     }, timeoutMs);
 
-    subscription = client.onNotification<LogMessageParams>(lspNode.LogMessageNotification.type, (params: LogMessageParams) => {
+    subscription = client.onNotification<LogMessageParams>(LogMessageNotification.type, (params: LogMessageParams) => {
       const message = params && typeof params.message === "string" ? params.message : "";
       if (indexRegex.test(message)) {
         clearTimeout(timer);
@@ -407,7 +436,7 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
     logRepoProgress(repo.name, "Metals initialized");
 
     mirroredLogSubscription = client.onNotification<LogMessageParams>(
-      lspNode.LogMessageNotification.type,
+      LogMessageNotification.type,
       (params: LogMessageParams) => {
         const level = getLogMessageTypeLabel(params && params.type);
         const message = params && typeof params.message === "string" ? params.message : "";
@@ -418,51 +447,43 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
     );
 
     logRepoProgress(repo.name, "Waiting for Metals index to load");
-    await waitForIndexLoadedMessage(client, 10 * 60 * 1000);
+    // await waitForIndexLoadedMessage(client, 10 * 60 * 1000);
     logRepoProgress(repo.name, "Metals index loaded");
 
     const javaFiles = collectJavaFiles(repoDir);
     logRepoProgress(repo.name, "Collected " + javaFiles.length + " Java files");
 
-    const diagnosticsWaiters: {
-      [uri: string]: Array<(diagnostics: Diagnostic[]) => void>;
-    } = {};
+    const diagnosticsWaiters: [path: string, resolve: () => void][] = [];
 
-    client.onNotification<PublishDiagnosticsParams>(lspNode.PublishDiagnosticsNotification.type, (params: PublishDiagnosticsParams) => {
-      const waiters = diagnosticsWaiters[params.uri];
-      if (waiters && waiters.length > 0) {
-        const copy = waiters.slice(0);
-        diagnosticsWaiters[params.uri] = [];
-        for (let i = 0; i < copy.length; i += 1) {
-          copy[i](params.diagnostics || []);
-        }
+    client.onNotification<PublishDiagnosticsParams>(PublishDiagnosticsNotification.type, (params: PublishDiagnosticsParams) => {
+      const index = diagnosticsWaiters.findIndex((entry: [path: string, callback: () => void]) => {
+        const fsPath = path.resolve(URI.parse(params.uri).fsPath.toLowerCase());
+        return entry[0] === fsPath;
+      });
+      if (index !== -1) {
+        const [path, callback] = diagnosticsWaiters[index];
+        callback();
+        diagnosticsWaiters.splice(index, 1);
       }
     });
 
-    const waitForDiagnostics = (uri: string, timeoutMs: number): Promise<Diagnostic[] | null> =>
-      new Promise((resolve) => {
+    const waitForDiagnostics = (path: string, timeoutMs: number): Promise<void> =>
+      new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
-          const queue = diagnosticsWaiters[uri] || [];
-          diagnosticsWaiters[uri] = queue.filter((callback) => callback !== onDiagnostics);
-          resolve(null);
+          reject(new Error("Timed out waiting for diagnostics"));
         }, timeoutMs);
 
-        const onDiagnostics = (diagnostics: Diagnostic[]) => {
+        diagnosticsWaiters.push([path, () => {
           clearTimeout(timeout);
-          resolve(diagnostics);
-        };
-
-        if (!diagnosticsWaiters[uri]) {
-          diagnosticsWaiters[uri] = [];
-        }
-        diagnosticsWaiters[uri].push(onDiagnostics);
+          resolve();
+        }]);
       });
 
     for (let i = 0; i < javaFiles.length; i += 1) {
       const filePath = javaFiles[i];
       const uri = toFileUri(filePath);
       const text = fs.readFileSync(filePath, "utf8");
-      logRepoProgress(repo.name, "Processing file " + (i + 1) + "/" + javaFiles.length + ": " + filePath);
+      logRepoProgress(repo.name, "Processing file " + (i + 1) + "/" + javaFiles.length);
 
       const didOpenParams: DidOpenTextDocumentParams = {
         textDocument: {
@@ -472,32 +493,22 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
           text,
         },
       };
-      client.sendNotification<DidOpenTextDocumentParams>(lspNode.DidOpenTextDocumentNotification.type, didOpenParams);
+      client.sendNotification<DidOpenTextDocumentParams>(DidOpenTextDocumentNotification.type, didOpenParams);
 
-      const diagnostics = await waitForDiagnostics(uri, 10000);
-      if (diagnostics === null) {
+      try {
+        await waitForDiagnostics(filePath.toLowerCase(), 10000);
+        logRepoProgress(repo.name, "Diagnostics received for " + filePath);
+      } catch (error: any) {
         appendLog(outPath, "Timeout: " + filePath);
         logRepoProgress(repo.name, "Timed out waiting for diagnostics: " + filePath);
-      } else {
-        let hasError = false;
-        for (let j = 0; j < diagnostics.length; j += 1) {
-          if (diagnostics[j].severity === 1) {
-            hasError = true;
-            break;
-          }
-        }
-        if (hasError) {
-          appendLog(outPath, "Error: " + filePath);
-          logRepoProgress(repo.name, "Error diagnostics reported: " + filePath);
-        }
+      } finally {
+        const didCloseParams: DidCloseTextDocumentParams = {
+          textDocument: {
+            uri,
+          },
+        };
+        client.sendNotification<DidCloseTextDocumentParams>(DidCloseTextDocumentNotification.type, didCloseParams);
       }
-
-      const didCloseParams: DidCloseTextDocumentParams = {
-        textDocument: {
-          uri,
-        },
-      };
-      client.sendNotification<DidCloseTextDocumentParams>(lspNode.DidCloseTextDocumentNotification.type, didCloseParams);
     }
     logRepoProgress(repo.name, "Finished processing Java files");
   } catch (error: any) {

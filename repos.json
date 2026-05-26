@@ -1,15 +1,3 @@
 [
-  { "name": "google-guava", "uri": "https://github.com/google/guava" },
-  {
-    "name": "spring-boot",
-    "uri": "https://github.com/spring-projects/spring-boot"
-  },
-  {
-    "name": "spring-framework",
-    "uri": "https://github.com/spring-projects/spring-framework"
-  },
-  {
-    "name": "spring-security",
-    "uri": "https://github.com/spring-projects/spring-security"
-  }
+  {"name":"apache-maven","uri":"https://github.com/apache/maven"}
 ]
