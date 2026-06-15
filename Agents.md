@@ -1,7 +1,9 @@
 # Agents
 
-This is a simple Node.js command-line application. It tests whether the metals 
+This is a simple Node.js command-line application. It tests whether a
 language server finds errors in workspace from a list of github repos.
+
+Supported servers: Metals (default), Eclipse JDT.LS (`--server jdtls`), IntelliJ (`--server intellij`).
 
 ## Goal
 

@@ -26,6 +26,29 @@
       "outFiles": [
         "${workspaceFolder}/app/build/**/*.js"
       ]
+    },
+    {
+      "name": "runIntellij",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/app/build/index.js",
+      "args": [
+        "--server",
+        "intellij",
+        "--repos",
+        "tiny-repo.json",
+        "--out",
+        "out-tiny-repo.txt"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceFolder}/app/build/**/*.js"
+      ]
     }
   ]
 }

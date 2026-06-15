@@ -12,7 +12,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node app/build/index.js",
-    "runWithBuilt": "npm run start -- --repos repos-bazel.json --out out-repos-bazel.txt --server-version 2.0.0-SNAPSHOT"
+    "runWithBuilt": "npm run start -- --repos repos-bazel.json --out out-repos-bazel.txt --server-version 2.0.0-SNAPSHOT",
+    "runIntellij": "npm run start -- --server intellij --repos tiny-repo.json --out out-tiny-repo.txt"
   },
   "dependencies": {
     "vscode-uri": "^3.1.0"
