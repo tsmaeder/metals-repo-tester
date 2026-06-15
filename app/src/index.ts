@@ -23,7 +23,9 @@ import path = require("path");
 import os = require("os");
 import cp = require("child_process");
 import { pathToFileURL } from "url";
-import { createProtocolConnection, DidCloseTextDocumentNotification, DidOpenTextDocumentNotification, ExitNotification, InitializedNotification, InitializeRequest, LogMessageNotification, PublishDiagnosticsNotification, ShowMessageRequest, ShutdownRequest, StreamMessageReader, StreamMessageWriter } from "vscode-languageserver-protocol/node";
+import { createProtocolConnection, DiagnosticSeverity, DidCloseTextDocumentNotification, DidOpenTextDocumentNotification, ExitNotification, InitializedNotification, InitializeRequest, LogMessageNotification, PublishDiagnosticsNotification, ShowMessageRequest, ShutdownRequest, StreamMessageReader, StreamMessageWriter } from "vscode-languageserver-protocol/node";
+import { log } from "console";
+import { Deferred } from "./deferred";
 
 const REQUIRED_METALS_ARGS = [
   "-Djol.magicFieldOffset=true",
@@ -332,7 +334,11 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: 
 }
 
 async function startMetalsClient(metalsClasspath: string, workspaceDir: string, repoName: string): Promise<MetalsLspClient> {
-  const args = ["-Xss4m", "-Xms100m", "-Dmetals.client=repo-tester", "-Dmetals.loglevel=trace", "-classpath", metalsClasspath, ...REQUIRED_METALS_ARGS, "scala.meta.metals.Main"];
+  const args = ["-Xss4m", "-Xms100m", "-Xmx8g",
+    "-Dmetals.client=repo-tester",
+    // "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=localhost:5005,quiet=y",
+    // "-Dmetals.loglevel=debug", 
+    "-classpath", metalsClasspath, ...REQUIRED_METALS_ARGS, "scala.meta.metals.Main"];
   const child = cp.spawn("java", args, {
     cwd: workspaceDir,
     stdio: ["pipe", "pipe", "pipe"],
@@ -372,6 +378,7 @@ async function startMetalsClient(metalsClasspath: string, workspaceDir: string, 
       "metals.preferredBuildServer": "MBT",
       "isHttpEnabled": true,
       "presentationCompilerDiagnostics": true,
+      "didFocusProvider": true
     },
     capabilities: {},
     trace: "off",
@@ -392,32 +399,13 @@ async function startMetalsClient(metalsClasspath: string, workspaceDir: string, 
   return client;
 }
 
-function waitForIndexLoadedMessage(client: MetalsLspClient, timeoutMs: number): Promise<void> {
-  const indexRegex = /mbt-v2 loaded index for \d+ files in/;
-
-  return new Promise((resolve, reject) => {
-    let subscription: Disposable;
-    const timer = setTimeout(() => {
-      if (subscription) {
-        subscription.dispose();
-      }
-      reject(new Error("Timed out waiting for Metals index log"));
-    }, timeoutMs);
-
-    subscription = client.onNotification<LogMessageParams>(LogMessageNotification.type, (params: LogMessageParams) => {
-      const message = params && typeof params.message === "string" ? params.message : "";
-      if (indexRegex.test(message)) {
-        clearTimeout(timer);
-        subscription.dispose();
-        resolve();
-      }
-    });
-  });
-}
-
 async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: string): Promise<void> {
   appendLog(outPath, "starting " + repo.name);
   logRepoProgress(repo.name, "Starting repository run");
+
+  const logWaiters: [RegExp, Deferred<void>][] = [];
+  const indexLoadedDeferred = new Deferred<void>(900000);
+  logWaiters.push([/time: indexed workspace in /, indexLoadedDeferred]);
 
   let tempRootDir = "";
   let repoDir = "";
@@ -438,6 +426,11 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
     mirroredLogSubscription = client.onNotification<LogMessageParams>(
       LogMessageNotification.type,
       (params: LogMessageParams) => {
+        for (const [pattern, deferred] of logWaiters) {
+          if (pattern.test(params.message)) {
+            deferred.resolve();
+          }
+        }
         const level = getLogMessageTypeLabel(params && params.type);
         const message = params && typeof params.message === "string" ? params.message : "";
         if (message.length > 0) {
@@ -447,7 +440,7 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
     );
 
     logRepoProgress(repo.name, "Waiting for Metals index to load");
-    // await waitForIndexLoadedMessage(client, 10 * 60 * 1000);
+    await indexLoadedDeferred.promise();
     logRepoProgress(repo.name, "Metals index loaded");
 
     const javaFiles = collectJavaFiles(repoDir);
@@ -456,6 +449,9 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
     const diagnosticsWaiters: [path: string, resolve: () => void][] = [];
 
     client.onNotification<PublishDiagnosticsParams>(PublishDiagnosticsNotification.type, (params: PublishDiagnosticsParams) => {
+      if (params.diagnostics.some(d => d.severity === DiagnosticSeverity.Error)) {
+        appendLog(outPath, "[lsp][" + repo.name + "][error] " + params.uri + ": " + params.diagnostics[0].message);
+      }
       const index = diagnosticsWaiters.findIndex((entry: [path: string, callback: () => void]) => {
         const fsPath = path.resolve(URI.parse(params.uri).fsPath.toLowerCase());
         return entry[0] === fsPath;
@@ -493,6 +489,7 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
           text,
         },
       };
+      client.sendNotification<string>("metals/didFocusTextDocument", uri);
       client.sendNotification<DidOpenTextDocumentParams>(DidOpenTextDocumentNotification.type, didOpenParams);
 
       try {
@@ -512,6 +509,7 @@ async function processRepo(repo: RepoEntry, metalsClasspath: string, outPath: st
     }
     logRepoProgress(repo.name, "Finished processing Java files");
   } catch (error: any) {
+    console.error(error);
     const failureMessage = String(error && error.message ? error.message : error);
     appendLog(outPath, "Failure: " + repo.name + " - " + failureMessage);
     logRepoProgress(repo.name, "Failure: " + failureMessage);

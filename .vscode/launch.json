@@ -8,9 +8,9 @@
       "program": "${workspaceFolder}/app/build/index.js",
       "args": [
         "--repos",
-        "repos.json",
+        "one-repo.json",
         "--out",
-        "out.txt",
+        "out-one-repo.txt",
         "--server-version",
         "2.0.0-SNAPSHOT"
       ],

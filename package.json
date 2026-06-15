@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node app/build/index.js",
-    "runWithBuilt": "npm run start -- --repos repos.json --out out.txt --server-version 2.0.0-SNAPSHOT"
+    "runWithBuilt": "npm run start -- --repos repos-bazel.json --out out-repos-bazel.txt --server-version 2.0.0-SNAPSHOT"
   },
   "dependencies": {
     "vscode-uri": "^3.1.0"

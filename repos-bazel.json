@@ -1,0 +1,34 @@
+[
+    {
+        "name": "buildfarm",
+        "uri": "https://github.com/buildfarm/buildfarm"
+    },
+    {
+        "name": "bazelbuild/bazel",
+        "uri": "https://github.com/bazelbuild/bazel"
+    },
+    {
+        "name": "google/closure-compiler",
+        "uri": "https://github.com/google/closure-compiler"
+    },
+    {
+        "name": "grpc/grpc-java",
+        "uri": "https://github.com/grpc/grpc-java"
+    },
+    {
+        "name": "google/dagger",
+        "uri": "https://github.com/google/dagger"
+    },
+    {
+        "name": "google/j2cl",
+        "uri": "https://github.com/google/j2cl"
+    },
+    {
+        "name": "google/kythe",
+        "uri": "https://github.com/kythe/kythe"
+    },
+    {
+        "name": "google/closure-templates",
+        "uri": "https://github.com/google/closure-templates"
+    }
+]
