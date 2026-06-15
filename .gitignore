@@ -5,6 +5,7 @@ node_modules/
 app/build/
 dist/
 coverage/
+out/
 
 # Logs
 *.log
