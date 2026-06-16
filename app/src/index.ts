@@ -1,8 +1,10 @@
 /// <reference lib="es2015" />
 
 import type {
+  Diagnostic,
   DidCloseTextDocumentParams,
   DidOpenTextDocumentParams,
+  DocumentDiagnosticReport,
   InitializeResult,
   InitializedParams,
   LogMessageParams,
@@ -21,12 +23,13 @@ import {
   DiagnosticSeverity,
   DidCloseTextDocumentNotification,
   DidOpenTextDocumentNotification,
+  DocumentDiagnosticRequest,
   InitializedNotification,
   InitializeRequest,
   LogMessageNotification,
   PublishDiagnosticsNotification,
 } from "vscode-languageserver-protocol/node";
-import type { LanguageServer, RepoEntry, ServerContext } from "./language-server";
+import type { LanguageServer, PullDiagnosticsOptions, RepoEntry, ServerContext } from "./language-server";
 import { getLanguageServer, listLanguageServerIds } from "./language-servers";
 import { LspClient } from "./lsp-client";
 import {
@@ -121,6 +124,48 @@ function diagnosticsTimeoutMs(serverId: string): number {
   return 10000;
 }
 
+const DEFAULT_PULL_DIAGNOSTICS_OPTIONS: PullDiagnosticsOptions = {
+  pollIntervalMs: 750,
+  settleMs: 4000,
+  requestTimeoutMs: 30000,
+};
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Requests diagnostics via textDocument/diagnostic. The server may return an
+// empty "full" report before analysis finishes, so we poll: return as soon as
+// any items appear, and otherwise treat a settled empty report as "clean".
+async function pullDiagnostics(
+  client: LspClient,
+  uri: string,
+  options: PullDiagnosticsOptions,
+): Promise<Diagnostic[]> {
+  const start = Date.now();
+  for (;;) {
+    let report: DocumentDiagnosticReport;
+    try {
+      report = await withTimeout(
+        client.sendRequest(DocumentDiagnosticRequest.type, { textDocument: { uri } }) as Promise<DocumentDiagnosticReport>,
+        options.requestTimeoutMs,
+        "Timed out waiting for pull diagnostics",
+      );
+    } catch (_error) {
+      return [];
+    }
+
+    const items = report && report.kind === "full" ? report.items : [];
+    if (items.length > 0) {
+      return items;
+    }
+    if (Date.now() - start >= options.settleMs) {
+      return [];
+    }
+    await delay(options.pollIntervalMs);
+  }
+}
+
 async function startLspClient(
   server: LanguageServer,
   resolved: unknown,
@@ -177,6 +222,7 @@ async function processRepo(
     fs.mkdirSync(workspaceDataDir, { recursive: true });
 
     logRepoProgress(repo.name, "Starting " + server.displayName + " language server");
+    const startupStart = Date.now();
     client = await startLspClient(server, resolved, repoDir, repo.name, workspaceDataDir);
     logRepoProgress(repo.name, server.displayName + " initialized");
 
@@ -193,26 +239,38 @@ async function processRepo(
 
     logRepoProgress(repo.name, "Waiting for " + server.displayName + " to become ready");
     await server.waitForReady(client, repo.name, workspaceDataDir);
-    logRepoProgress(repo.name, server.displayName + " ready");
+    const readyMs = Date.now() - startupStart;
+    appendLog(outPath, "ready " + repo.name + " in " + readyMs + "ms");
+    logRepoProgress(repo.name, server.displayName + " ready in " + readyMs + "ms");
 
     const files = server.collectFiles(repoDir);
     logRepoProgress(repo.name, "Collected " + files.length + " Java files");
 
+    const usePull = server.usePullDiagnostics === true;
+    const pullOptions = server.pullDiagnosticsOptions || DEFAULT_PULL_DIAGNOSTICS_OPTIONS;
     const diagnosticsWaiters: [string, () => void][] = [];
     const fileTimeoutMs = diagnosticsTimeoutMs(serverId);
 
-    client.onNotification<PublishDiagnosticsParams>(PublishDiagnosticsNotification.type, (params: PublishDiagnosticsParams) => {
-      if (params.diagnostics.some((d) => d.severity === DiagnosticSeverity.Error)) {
-        appendLog(outPath, "[lsp][" + repo.name + "][error] " + params.uri + ": " + params.diagnostics[0].message);
+    const logErrorDiagnostics = (uri: string, diagnostics: Diagnostic[]): boolean => {
+      const errors = diagnostics.filter((d) => d.severity === DiagnosticSeverity.Error);
+      for (let j = 0; j < errors.length; j += 1) {
+        appendLog(outPath, "[lsp][" + repo.name + "][error] " + uri + ": " + errors[j].message);
       }
-      const fsPath = path.resolve(URI.parse(params.uri).fsPath.toLowerCase());
-      const index = diagnosticsWaiters.findIndex((entry) => entry[0] === fsPath);
-      if (index !== -1) {
-        const callback = diagnosticsWaiters[index][1];
-        callback();
-        diagnosticsWaiters.splice(index, 1);
-      }
-    });
+      return errors.length > 0;
+    };
+
+    if (!usePull) {
+      client.onNotification<PublishDiagnosticsParams>(PublishDiagnosticsNotification.type, (params: PublishDiagnosticsParams) => {
+        logErrorDiagnostics(params.uri, params.diagnostics);
+        const fsPath = path.resolve(URI.parse(params.uri).fsPath.toLowerCase());
+        const index = diagnosticsWaiters.findIndex((entry) => entry[0] === fsPath);
+        if (index !== -1) {
+          const callback = diagnosticsWaiters[index][1];
+          callback();
+          diagnosticsWaiters.splice(index, 1);
+        }
+      });
+    }
 
     const waitForDiagnostics = (filePath: string, timeoutMs: number): Promise<void> =>
       new Promise((resolve, reject) => {
@@ -247,8 +305,17 @@ async function processRepo(
       client.sendNotification(DidOpenTextDocumentNotification.type, didOpenParams);
 
       try {
-        await waitForDiagnostics(filePath.toLowerCase(), fileTimeoutMs);
-        logRepoProgress(repo.name, "Diagnostics received for " + filePath);
+        if (usePull) {
+          const diagnostics = await pullDiagnostics(client, uri, pullOptions);
+          if (logErrorDiagnostics(uri, diagnostics)) {
+            logRepoProgress(repo.name, "Error diagnostics for " + filePath);
+          } else {
+            logRepoProgress(repo.name, "No error diagnostics for " + filePath);
+          }
+        } else {
+          await waitForDiagnostics(filePath.toLowerCase(), fileTimeoutMs);
+          logRepoProgress(repo.name, "Diagnostics received for " + filePath);
+        }
       } catch (_error) {
         appendLog(outPath, "Timeout: " + filePath);
         logRepoProgress(repo.name, "Timed out waiting for diagnostics: " + filePath);

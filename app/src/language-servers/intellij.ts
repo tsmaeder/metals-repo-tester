@@ -8,7 +8,7 @@ import path = require("path");
 import crypto = require("crypto");
 import type { InitializeParams } from "vscode-languageserver-protocol";
 import type { LspClient } from "../lsp-client";
-import type { LanguageServer, ServerContext, SpawnSpec } from "../language-server";
+import type { LanguageServer, PullDiagnosticsOptions, ServerContext, SpawnSpec } from "../language-server";
 import { collectJavaFiles, logRepoProgress, toFileUri, withTimeout } from "../util";
 
 export interface IntelliJResolvedServer {
@@ -151,6 +151,12 @@ function waitForLogReady(systemPath: string, repoName: string): Promise<void> {
 export class IntelliJLanguageServer implements LanguageServer {
   public readonly id = "intellij";
   public readonly displayName = "IntelliJ Language Server";
+  public readonly usePullDiagnostics = true;
+  public readonly pullDiagnosticsOptions: PullDiagnosticsOptions = {
+    pollIntervalMs:300,
+    settleMs: 2400,
+    requestTimeoutMs: 30000,
+  };
 
   private resolvedServer?: IntelliJResolvedServer;
 

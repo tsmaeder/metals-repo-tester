@@ -19,9 +19,29 @@ export interface SpawnSpec {
   env?: { [key: string]: string };
 }
 
+export interface PullDiagnosticsOptions {
+  // Interval between successive textDocument/diagnostic polls.
+  pollIntervalMs: number;
+  // How long to keep polling for diagnostics to appear before concluding the
+  // file is clean (the server may return empty reports while still analyzing).
+  settleMs: number;
+  // Hard timeout for a single textDocument/diagnostic request.
+  requestTimeoutMs: number;
+}
+
 export interface LanguageServer {
   readonly id: string;
   readonly displayName: string;
+
+  // When true, the driver requests diagnostics via textDocument/diagnostic
+  // (pull) instead of waiting for textDocument/publishDiagnostics (push).
+  // Needed for servers (e.g. IntelliJ) that do not push diagnostics for
+  // files without problems.
+  readonly usePullDiagnostics?: boolean;
+
+  // Per-server timing for pull diagnostics. When omitted, the driver uses its
+  // defaults. Only relevant when usePullDiagnostics is true.
+  readonly pullDiagnosticsOptions?: PullDiagnosticsOptions;
 
   resolveServer(ctx: ServerContext): Promise<unknown>;
 
