@@ -1,0 +1,11 @@
+[
+    {"name":"pmd","uri":"https://github.com/pmd/pmd"},
+    {"name":"spotbugs","uri":"https://github.com/spotbugs/spotbugs"},
+    {"name":"findbugs","uri":"https://github.com/findbugsproject/findbugs"},
+    {"name":"vertx","uri":"https://github.com/eclipse-vertx/vert.x"},
+    {"name":"micronaut-core","uri":"https://github.com/micronaut-projects/micronaut-core"},
+    {"name":"apache-camel","uri":"https://github.com/apache/camel"},
+    {"name":"elasticsearch","uri":"https://github.com/elastic/elasticsearch"},
+    {"name":"quarkus","uri":"https://github.com/quarkusio/quarkus"},
+    {"name":"log4j2","uri":"https://github.com/apache/logging-log4j2"}
+]
