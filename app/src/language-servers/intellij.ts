@@ -17,9 +17,9 @@ export interface IntelliJResolvedServer {
 }
 
 // Logged by WsmPersistenceKt after workspace import/indexing completes.
-const READY_LOG_PATTERN = /Workspace model cache saved/;
+const READY_LOG_PATTERN = /RocksDB flush took /;
 const READY_LOG_POLL_MS = 500;
-const READY_TIMEOUT_MS = 900000;
+const READY_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
 
 function resolveDefaultIntellijServerPath(): string | undefined {
   const envPath = process.env.INTELLIJ_SERVER;
