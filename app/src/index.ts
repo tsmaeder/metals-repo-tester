@@ -50,6 +50,7 @@ interface CliArgs {
   serverVersion?: string;
   jdtlsHome?: string;
   intellijServerPath?: string;
+  openFiles: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -59,6 +60,7 @@ function parseArgs(argv: string[]): CliArgs {
   let serverVersion: string | undefined;
   let jdtlsHome: string | undefined;
   let intellijServerPath: string | undefined;
+  let openFiles = true;
 
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -80,6 +82,8 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (arg === "--intellij-server" && i + 1 < argv.length) {
       intellijServerPath = path.resolve(argv[i + 1]);
       i += 1;
+    } else if (arg === "--no-open-files") {
+      openFiles = false;
     }
   }
 
@@ -87,11 +91,11 @@ function parseArgs(argv: string[]): CliArgs {
     throw new Error(
       "Usage: node app/build/index.js --repos <repos.json> [--server <"
         + listLanguageServerIds().join("|")
-        + ">] [--server-version <metals-version>] [--jdtls-home <path>] [--intellij-server <path>] [--out <out.txt>]",
+        + ">] [--server-version <metals-version>] [--jdtls-home <path>] [--intellij-server <path>] [--no-open-files] [--out <out.txt>]",
     );
   }
 
-  return { reposPath, outPath, serverId, serverVersion, jdtlsHome, intellijServerPath };
+  return { reposPath, outPath, serverId, serverVersion, jdtlsHome, intellijServerPath, openFiles };
 }
 
 function validateArgs(args: CliArgs): void {
@@ -202,6 +206,7 @@ async function processRepo(
   resolved: unknown,
   outPath: string,
   serverId: string,
+  openFiles: boolean,
 ): Promise<void> {
   appendLog(outPath, "starting " + repo.name);
   logRepoProgress(repo.name, "Starting repository run");
@@ -242,6 +247,11 @@ async function processRepo(
     const readyMs = Date.now() - startupStart;
     appendLog(outPath, "ready " + repo.name + " in " + readyMs + "ms");
     logRepoProgress(repo.name, server.displayName + " ready in " + readyMs + "ms");
+
+    if (!openFiles) {
+      logRepoProgress(repo.name, "Skipping Java file diagnostics (--no-open-files)");
+      return;
+    }
 
     const files = server.collectFiles(repoDir);
     logRepoProgress(repo.name, "Collected " + files.length + " Java files");
@@ -384,7 +394,7 @@ async function main(): Promise<void> {
 
   for (let i = 0; i < repos.length; i += 1) {
     logRepoProgress(repos[i].name, "Running repository " + (i + 1) + "/" + repos.length);
-    await processRepo(repos[i], server, resolved, args.outPath, args.serverId);
+    await processRepo(repos[i], server, resolved, args.outPath, args.serverId, args.openFiles);
   }
   logProgress("All repositories processed");
 }
